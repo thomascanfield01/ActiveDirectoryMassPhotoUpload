@@ -1,0 +1,65 @@
+Import-Module ActiveDirectory
+
+<#variable list, repPics is where we get the pictures, adUsers are the Active Directory Users, 
+archiveImages is any image not found to match an Active Directory User. NOTE we use the -Replace variable because of a naming convention used for our RDP #>
+$repPics = 'pathway to your picture folder'
+$adUsers = Get-ADUser -Filter * -Properties DisplayName | Select-Object -ExpandProperty DisplayName
+$Users = $adUsers -Replace " ","-"
+$archiveImages = 'pathway of where images are moved into archive'
+
+<#Grab all rep-pics and compare to the Active Directory names. If the User doesnt contain the rep-pics basename then move it to the archive. 
+Basename removes the .jpg off the picture to create equal name strings   #>
+Get-ChildItem -Path $repPics -File | 
+    Where-Object { $Users -notcontains $_.BaseName } | 
+    Move-Item -Destination $archiveImages -Force
+
+$moved = Get-ChildItem -Path $repPics -File | 
+    Where-Object { $Users -notcontains $_.BaseName } | 
+    ForEach-Object {
+        $file = $moved.FullName
+        $_ | Move-Item -Destination $archiveImages -Force
+        [PsCustomObject]@{
+            'File'    = $file
+            'MovedTo' = $archiveImages
+        }
+    } 
+<# Exports all items in archive folder to a csv for review, by including OUT it uniquely identifies the date of the record created #>
+$out = '{0:yyyy-MM-dd}_MovedImages.csv' -f (Get-Date)
+Get-childitem  \\web01\rep-pics\01_Rep_Image_Archive  | Export-Csv  (Join-Path -Path \\web01\rep-pics\01_Rep_Image_Archive -ChildPath $out)  -notypeinformation
+
+<# gets all items in the archive file. If the last write time is less than today -6 days, than it removes it. 
+Meaning each week the images are deleted before it runs again #>
+Get-ChildItem -path \folderpathway | Where-Object {($_.LastAccessTime -lt (Get-Date).AddDays(-6))} | Remove-Item
+
+
+
+################## Updated to Mass Upload Thumbnails
+
+$usersWithoutImage = Get-ADUser -Filter "enabled -eq 'true' -and thumbnailPhoto -notlike '*'" -SearchBase 'ou=name,dc=name,dc=name' | Select-Object -ExpandProperty SamAccountName
+
+#Write-Host $usersWithoutImage
+
+$repPics = (Get-childItem \\web01\rep-pics).basename
+
+Write-Host "Found $($usersWithoutImage.Count) users without a photo"
+
+ForEach ($user in $usersWithoutImage){
+    $userName = Get-ADUser -Filter {SamAccountName -eq $user} -Properties DisplayName | Select-Object -ExpandProperty DisplayName
+    $DisplayName = $userName -Replace " ","-"
+    #Write-Host $DisplayName
+    if ($repPics -contains $DisplayName){
+        Write-Host "Users name [$user] is in the users photo directory, uploading..."
+        $imagePath = "\\web01\rep-pics\$($DisplayName).jpg"
+        #Write-Host $imagePath
+        $ADphoto = [byte[]](Get-Content $imagePath -Encoding byte)
+        Set-ADUser -identity $user -Replace @{thumbnailPhoto=$ADphoto}
+    }
+    else{
+        Write-Warning "Users name [$user] is NOT in the users photo directory, please update!!"
+    }
+}
+
+
+<# Searches the Active Directory Users and if they have no thumbnail, upload it to their account by the pictures, tells us who is still missing a thumbnail #>
+$outTwo = '{0:yyyy-MM-dd}_MissingThumbnail.csv' -f (Get-Date)
+Get-ADUser -Filter "enabled -eq 'true' -and thumbnailPhoto -notlike '*'" | Select-Object -ExpandProperty name |Export-Csv  (Join-Path -Path \\web01\rep-pics\01_Rep_Image_Archive -ChildPath $out)  -notypeinformation
